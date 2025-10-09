@@ -32,28 +32,14 @@ jobs:
           async function main() {
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext();
-            
-            // 解析并设置 cookies
-            const cookieString = process.env.SKYBOTS_COOKIES;
-            const cookies = cookieString.split('; ').map(cookie => {
-              const equalIndex = cookie.indexOf('=');
-              const name = cookie.substring(0, equalIndex).trim();
-              const value = cookie.substring(equalIndex + 1);
-              
-              return {
-                name: name,
-                value: value,
-                domain: '.skybots.tech',
-                path: '/',
-                httpOnly: name.includes('auth') || name.includes('session'),
-                secure: name.includes('Secure') || name.includes('Host'),
-                sameSite: 'Lax'
-              };
-            });
-            
-            await context.addCookies(cookies);
-            
             const page = await context.newPage();
+            
+            // 设置 cookie header
+            const cookieString = process.env.SKYBOTS_COOKIES;
+            
+            await page.setExtraHTTPHeaders({
+              'Cookie': cookieString
+            });
             
             try {
               console.log('正在访问页面...');
