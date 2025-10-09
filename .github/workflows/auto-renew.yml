@@ -14,89 +14,147 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
 
-      - name: Install Playwright
+      - name: Install dependencies
         run: |
-          npm install -D @playwright/test
-          npx playwright install chromium
+          pip install selenium requests
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Install ChromeDriver
+        uses: nanasess/setup-chromedriver@v2
 
       - name: Create renewal script
         run: |
-          cat > renew.js << 'EOF'
-          const { chromium } = require('@playwright/test');
+          cat > renew.py << 'EOF'
+          import os
+          import time
+          import json
+          from selenium import webdriver
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.support.ui import WebDriverWait
+          from selenium.webdriver.support import expected_conditions as EC
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.chrome.service import Service
 
-          async function main() {
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext();
-            const page = await context.newPage();
-            
-            // 设置 cookie header
-            const cookieString = process.env.SKYBOTS_COOKIES;
-            
-            await page.setExtraHTTPHeaders({
-              'Cookie': cookieString
-            });
-            
-            try {
-              console.log('正在访问页面...');
-              await page.goto('https://skybots.tech/dashboard/my-projects', {
-                waitUntil: 'networkidle',
-                timeout: 30000
-              });
-              
-              await page.waitForTimeout(5000);
-              
-              // 截图以便调试
-              await page.screenshot({ path: 'page.png', fullPage: true });
-              console.log('已保存页面截图');
-              
-              // 检查是否需要续期 - 使用更精确的选择器
-              const renewButton = page.locator('button.bg-yellow-500\\/20:has-text("Renouveler")').first();
-              
-              // 等待页面完全加载
-              await page.waitForTimeout(2000);
-              
-              const count = await renewButton.count();
-              console.log(`找到 ${count} 个续期按钮`);
-              
-              if (count > 0) {
-                const isVisible = await renewButton.isVisible();
-                console.log(`按钮可见性: ${isVisible}`);
-                
-                if (isVisible) {
-                  console.log('发现续期按钮，正在点击...');
-                  await renewButton.click();
-                  await page.waitForTimeout(3000);
-                  console.log('✅ 续期成功');
-                } else {
-                  console.log('⚠️ 按钮存在但不可见');
-                }
-              } else {
-                console.log('✅ 无需续期，状态正常');
-              }
-              
-              // 获取更新后的 cookies
-              const newCookies = await context.cookies();
-              const cookieStr = newCookies
-                .filter(c => c.domain.includes('skybots.tech'))
-                .map(c => `${c.name}=${c.value}`)
-                .join('; ');
-              
-              console.log('NEW_COOKIES=' + cookieStr);
-              
-            } catch (error) {
-              console.error('❌ 错误:', error.message);
-              process.exit(1);
-            } finally {
-              await browser.close();
-            }
-          }
+          def parse_cookies(cookie_string):
+              """解析 cookie 字符串"""
+              cookies = []
+              for cookie in cookie_string.split('; '):
+                  if '=' in cookie:
+                      name, value = cookie.split('=', 1)
+                      cookies.append({
+                          'name': name.strip(),
+                          'value': value.strip(),
+                          'domain': '.skybots.tech',
+                          'path': '/'
+                      })
+              return cookies
 
-          main();
+          def main():
+              # 配置 Chrome 选项
+              chrome_options = Options()
+              chrome_options.add_argument('--headless')
+              chrome_options.add_argument('--no-sandbox')
+              chrome_options.add_argument('--disable-dev-shm-usage')
+              chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+              chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+              
+              driver = webdriver.Chrome(options=chrome_options)
+              
+              try:
+                  print('正在访问网站...')
+                  # 先访问主域名以设置 cookie
+                  driver.get('https://skybots.tech')
+                  time.sleep(2)
+                  
+                  # 解析并添加 cookies
+                  cookie_string = os.environ.get('SKYBOTS_COOKIES', '')
+                  cookies = parse_cookies(cookie_string)
+                  
+                  print(f'正在设置 {len(cookies)} 个 cookies...')
+                  for cookie in cookies:
+                      try:
+                          driver.add_cookie(cookie)
+                          print(f"✓ 已添加: {cookie['name']}")
+                      except Exception as e:
+                          print(f"✗ 添加失败 {cookie['name']}: {e}")
+                  
+                  # 刷新页面以应用 cookies
+                  print('\n正在刷新页面...')
+                  driver.get('https://skybots.tech/dashboard/my-projects')
+                  time.sleep(5)
+                  
+                  # 保存截图
+                  driver.save_screenshot('page.png')
+                  print('已保存页面截图')
+                  
+                  # 检查是否登录成功
+                  if 'discord' in driver.current_url.lower() or 'login' in driver.current_url.lower():
+                      print('❌ Cookie 已过期，未能登录成功')
+                      print(f'当前 URL: {driver.current_url}')
+                      return False
+                  
+                  print(f'✓ 当前 URL: {driver.current_url}')
+                  
+                  # 查找续期按钮
+                  try:
+                      # 等待页面加载
+                      WebDriverWait(driver, 10).until(
+                          EC.presence_of_element_located((By.TAG_NAME, "button"))
+                      )
+                      
+                      # 查找所有按钮
+                      buttons = driver.find_elements(By.TAG_NAME, "button")
+                      print(f'\n找到 {len(buttons)} 个按钮')
+                      
+                      renew_button = None
+                      for button in buttons:
+                          text = button.text.strip()
+                          if text:
+                              print(f'  - 按钮文本: "{text}"')
+                          if 'Renouveler' in text:
+                              renew_button = button
+                              print(f'✓ 找到续期按钮!')
+                              break
+                      
+                      if renew_button:
+                          print('\n正在点击续期按钮...')
+                          driver.execute_script("arguments[0].scrollIntoView(true);", renew_button)
+                          time.sleep(1)
+                          renew_button.click()
+                          time.sleep(3)
+                          print('✅ 续期成功')
+                      else:
+                          print('✅ 无需续期，状态正常')
+                      
+                  except Exception as e:
+                      print(f'检查按钮时出错: {e}')
+                  
+                  # 获取更新后的 cookies
+                  new_cookies = driver.get_cookies()
+                  cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in new_cookies if 'skybots.tech' in c.get('domain', '')])
+                  
+                  if cookie_str:
+                      print(f'\nNEW_COOKIES={cookie_str}')
+                  
+                  return True
+                  
+              except Exception as e:
+                  print(f'❌ 错误: {e}')
+                  driver.save_screenshot('error.png')
+                  return False
+              finally:
+                  driver.quit()
+
+          if __name__ == '__main__':
+              success = main()
+              exit(0 if success else 1)
           EOF
 
       - name: Run renewal
@@ -104,33 +162,36 @@ jobs:
         env:
           SKYBOTS_COOKIES: ${{ secrets.SKYBOTS_COOKIES }}
         run: |
-          output=$(node renew.js)
+          output=$(python renew.py 2>&1)
           echo "$output"
           
           # 提取新的 cookies
           new_cookies=$(echo "$output" | grep "NEW_COOKIES=" | cut -d'=' -f2-)
           if [ -n "$new_cookies" ]; then
-            echo "new_cookies=$new_cookies" >> $GITHUB_OUTPUT
+            echo "new_cookies<<EOF" >> $GITHUB_OUTPUT
+            echo "$new_cookies" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
           fi
 
       - name: Update cookies in secrets
         if: steps.renew.outputs.new_cookies != ''
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
-          NEW_COOKIES: ${{ steps.renew.outputs.new_cookies }}
         run: |
-          gh secret set SKYBOTS_COOKIES --body "$NEW_COOKIES"
+          gh secret set SKYBOTS_COOKIES --body "${{ steps.renew.outputs.new_cookies }}"
           echo "✅ Cookies 已更新"
 
-      - name: Upload screenshot on failure
+      - name: Upload screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: page-screenshot
-          path: page.png
+          name: screenshots
+          path: |
+            page.png
+            error.png
           if-no-files-found: ignore
 
       - name: Send notification on failure
         if: failure()
         run: |
-          echo "::error::续期失败，请检查日志"
+          echo "::error::续期失败，请检查日志和截图"
