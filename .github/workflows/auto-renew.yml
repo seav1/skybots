@@ -1,0 +1,119 @@
+name: Auto Renew Skybots
+
+on:
+  schedule:
+    # 每7天运行一次 (UTC 时间 00:00)
+    - cron: '0 0 */7 * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          npm install -D @playwright/test
+          npx playwright install chromium
+
+      - name: Create renewal script
+        run: |
+          cat > renew.js << 'EOF'
+          const { chromium } = require('@playwright/test');
+
+          async function main() {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext();
+            
+            // 解析并设置 cookies
+            const cookieString = process.env.SKYBOTS_COOKIES;
+            const cookies = cookieString.split('; ').map(cookie => {
+              const [name, value] = cookie.split('=');
+              return {
+                name: name.trim(),
+                value: decodeURIComponent(value),
+                domain: 'skybots.tech',
+                path: '/'
+              };
+            });
+            
+            await context.addCookies(cookies);
+            
+            const page = await context.newPage();
+            
+            try {
+              console.log('正在访问页面...');
+              await page.goto('https://skybots.tech/dashboard/my-projects', {
+                waitUntil: 'networkidle',
+                timeout: 30000
+              });
+              
+              await page.waitForTimeout(3000);
+              
+              // 检查是否需要续期
+              const renewButton = await page.locator('button:has-text("Renouveler")').first();
+              const isVisible = await renewButton.isVisible().catch(() => false);
+              
+              if (isVisible) {
+                console.log('发现续期按钮，正在点击...');
+                await renewButton.click();
+                await page.waitForTimeout(2000);
+                console.log('✅ 续期成功');
+              } else {
+                console.log('✅ 无需续期，状态正常');
+              }
+              
+              // 获取更新后的 cookies
+              const newCookies = await context.cookies();
+              const cookieStr = newCookies
+                .map(c => `${c.name}=${encodeURIComponent(c.value)}`)
+                .join('; ');
+              
+              console.log('NEW_COOKIES=' + cookieStr);
+              
+            } catch (error) {
+              console.error('❌ 错误:', error.message);
+              process.exit(1);
+            } finally {
+              await browser.close();
+            }
+          }
+
+          main();
+          EOF
+
+      - name: Run renewal
+        id: renew
+        env:
+          SKYBOTS_COOKIES: ${{ secrets.SKYBOTS_COOKIES }}
+        run: |
+          output=$(node renew.js)
+          echo "$output"
+          
+          # 提取新的 cookies
+          new_cookies=$(echo "$output" | grep "NEW_COOKIES=" | cut -d'=' -f2-)
+          if [ -n "$new_cookies" ]; then
+            echo "new_cookies=$new_cookies" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update cookies in secrets
+        if: steps.renew.outputs.new_cookies != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          NEW_COOKIES: ${{ steps.renew.outputs.new_cookies }}
+        run: |
+          gh secret set SKYBOTS_COOKIES --body "$NEW_COOKIES"
+          echo "✅ Cookies 已更新"
+
+      - name: Send notification on failure
+        if: failure()
+        run: |
+          echo "::error::续期失败，请检查日志"
