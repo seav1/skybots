@@ -2,7 +2,7 @@ name: Auto Renew Skybots
 
 on:
   schedule:
-    - cron: '0 0 */12 * *'  # 每12天运行一次
+    - cron: '0 0 */7 * *'  # 每7天运行一次
   workflow_dispatch:  # 允许手动触发
 
 jobs:
@@ -48,16 +48,29 @@ jobs:
               # 使用 CDP 设置 cookies
               driver.execute_cdp_cmd('Network.enable', {})
               for cookie in os.environ['COOKIES'].split('; '):
+                  if '=' not in cookie:
+                      continue
                   name, value = cookie.split('=', 1)
-                  driver.execute_cdp_cmd('Network.setCookie', {
-                      'name': name.strip(),
-                      'value': value.strip(),
+                  name = name.strip()
+                  value = value.strip()
+                  
+                  # 构建 cookie 参数
+                  cookie_param = {
+                      'name': name,
+                      'value': value,
                       'domain': '.skybots.tech',
-                      'path': '/',
-                      'secure': True,
-                      'httpOnly': True,
-                      'sameSite': 'Lax'
-                  })
+                      'path': '/'
+                  }
+                  
+                  # 根据 cookie 名称添加额外属性
+                  if '__Secure-' in name or '__Host-' in name:
+                      cookie_param['secure'] = True
+                      cookie_param['sameSite'] = 'None'
+                  
+                  try:
+                      driver.execute_cdp_cmd('Network.setCookie', cookie_param)
+                  except Exception as e:
+                      print(f'⚠️ 跳过 {name}: {e}')
               
               driver.get('https://skybots.tech/dashboard/my-projects')
               time.sleep(5)
