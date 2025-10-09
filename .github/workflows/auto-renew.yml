@@ -123,43 +123,77 @@ jobs:
           driver = webdriver.Chrome(options=chrome_options)
           
           try:
-              # 先访问主域名
+              # 使用 Chrome DevTools Protocol 注入 cookies
+              cookie_string = os.environ.get('SKYBOTS_COOKIES', '')
+              
+              # 先访问页面才能设置 cookie
               driver.get('https://skybots.tech')
               time.sleep(2)
               
-              # 添加 cookies
-              cookie_string = os.environ.get('SKYBOTS_COOKIES', '')
+              # 使用 CDP 设置 cookies（支持所有类型的 cookie）
+              driver.execute_cdp_cmd('Network.enable', {})
+              
               for cookie in cookie_string.split('; '):
                   if '=' in cookie:
                       name, value = cookie.split('=', 1)
-                      driver.add_cookie({
-                          'name': name.strip(),
-                          'value': value.strip(),
-                          'domain': '.skybots.tech'
-                      })
+                      name = name.strip()
+                      value = value.strip()
+                      
+                      try:
+                          # 构建 cookie 参数
+                          cookie_param = {
+                              'name': name,
+                              'value': value,
+                              'domain': '.skybots.tech',
+                              'path': '/',
+                              'secure': True,
+                              'httpOnly': True,
+                              'sameSite': 'None' if 'Secure' in name or 'Host' in name else 'Lax'
+                          }
+                          
+                          driver.execute_cdp_cmd('Network.setCookie', cookie_param)
+                          print(f'✓ 已设置: {name}')
+                      except Exception as e:
+                          print(f'✗ 设置失败 {name}: {e}')
               
-              # 访问目标页面
+              # 刷新页面应用 cookies
+              print('\n刷新页面...')
               driver.get('https://skybots.tech/dashboard/my-projects')
               time.sleep(5)
               
+              print(f'当前 URL: {driver.current_url}')
               driver.save_screenshot('page.png')
+              print('已保存截图')
+              
+              # 检查是否成功登录
+              if 'discord' in driver.current_url.lower() or 'login' in driver.current_url.lower():
+                  print('❌ Cookie 已过期，需要重新登录')
+                  exit(1)
               
               # 查找并点击续期按钮
               buttons = driver.find_elements(By.XPATH, "//button[contains(., 'Renouveler')]")
               
               if buttons:
-                  print(f'找到 {len(buttons)} 个续期按钮')
+                  print(f'\n找到 {len(buttons)} 个续期按钮')
+                  # 滚动到按钮位置
+                  driver.execute_script("arguments[0].scrollIntoView(true);", buttons[0])
+                  time.sleep(1)
                   buttons[0].click()
                   time.sleep(3)
+                  driver.save_screenshot('after_click.png')
                   print('✅ 已点击续期按钮')
                   
                   # 获取新 cookies
-                  new_cookies = driver.get_cookies()
-                  cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in new_cookies])
-                  print(f'NEW_COOKIES={cookie_str}')
+                  all_cookies = driver.get_cookies()
+                  cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in all_cookies])
+                  print(f'\nNEW_COOKIES={cookie_str}')
               else:
                   print('✅ 无需续期')
               
+          except Exception as e:
+              print(f'❌ 错误: {e}')
+              driver.save_screenshot('error.png')
+              exit(1)
           finally:
               driver.quit()
           PYEOF
@@ -171,5 +205,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: screenshot
-          path: page.png
+          path: |
+            page.png
+            after_click.png
+            error.png
           if-no-files-found: ignore
+
+      - name: Extract and update cookies
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f renew.log ]; then
+            new_cookies=$(grep "NEW_COOKIES=" renew.log | cut -d'=' -f2-)
+            if [ -n "$new_cookies" ]; then
+              echo "正在更新 Secrets..."
+              gh secret set SKYBOTS_COOKIES --body "$new_cookies"
+              echo "✅ Cookies 已更新"
+            fi
+          fi
