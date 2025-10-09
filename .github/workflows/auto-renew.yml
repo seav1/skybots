@@ -48,17 +48,33 @@ jobs:
                 timeout: 30000
               });
               
-              await page.waitForTimeout(3000);
+              await page.waitForTimeout(5000);
               
-              // 检查是否需要续期
-              const renewButton = await page.locator('button:has-text("Renouveler")').first();
-              const isVisible = await renewButton.isVisible().catch(() => false);
+              // 截图以便调试
+              await page.screenshot({ path: 'page.png', fullPage: true });
+              console.log('已保存页面截图');
               
-              if (isVisible) {
-                console.log('发现续期按钮，正在点击...');
-                await renewButton.click();
-                await page.waitForTimeout(2000);
-                console.log('✅ 续期成功');
+              // 检查是否需要续期 - 使用更精确的选择器
+              const renewButton = page.locator('button.bg-yellow-500\\/20:has-text("Renouveler")').first();
+              
+              // 等待页面完全加载
+              await page.waitForTimeout(2000);
+              
+              const count = await renewButton.count();
+              console.log(`找到 ${count} 个续期按钮`);
+              
+              if (count > 0) {
+                const isVisible = await renewButton.isVisible();
+                console.log(`按钮可见性: ${isVisible}`);
+                
+                if (isVisible) {
+                  console.log('发现续期按钮，正在点击...');
+                  await renewButton.click();
+                  await page.waitForTimeout(3000);
+                  console.log('✅ 续期成功');
+                } else {
+                  console.log('⚠️ 按钮存在但不可见');
+                }
               } else {
                 console.log('✅ 无需续期，状态正常');
               }
@@ -105,6 +121,14 @@ jobs:
         run: |
           gh secret set SKYBOTS_COOKIES --body "$NEW_COOKIES"
           echo "✅ Cookies 已更新"
+
+      - name: Upload screenshot on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: page-screenshot
+          path: page.png
+          if-no-files-found: ignore
 
       - name: Send notification on failure
         if: failure()
