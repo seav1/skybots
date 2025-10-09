@@ -2,235 +2,120 @@ name: Auto Renew Skybots
 
 on:
   schedule:
-    # 每7天运行一次 (UTC 时间 00:00)
-    - cron: '0 0 */7 * *'
-  workflow_dispatch: # 允许手动触发
+    - cron: '0 0 */7 * *'  # 每7天运行一次
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   renew:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Test cookie and renew
-        env:
-          SKYBOTS_COOKIES: ${{ secrets.SKYBOTS_COOKIES }}
-        run: |
-          # 首先测试 cookie 是否有效
-          echo "=== 测试 Cookie 有效性 ==="
-          response=$(curl -s -i -L \
-            -H "Cookie: $SKYBOTS_COOKIES" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            "https://skybots.tech/dashboard/my-projects")
-          
-          echo "$response" > response.html
-          
-          # 检查是否重定向到登录页
-          if echo "$response" | grep -iq "location:.*discord\|location:.*login"; then
-            echo "❌ Cookie 已过期，正在重定向到登录页"
-            echo "需要重新获取 Cookie"
-            exit 1
-          fi
-          
-          # 检查响应中是否包含 Discord 登录相关内容
-          if echo "$response" | grep -iq "discord"; then
-            echo "⚠️  响应中包含 Discord 相关内容"
-          fi
-          
-          # 检查状态码
-          status_code=$(echo "$response" | grep "HTTP/" | tail -1 | awk '{print $2}')
-          echo "HTTP 状态码: $status_code"
-          
-          if [ "$status_code" = "200" ]; then
-            echo "✓ Cookie 有效，成功访问页面"
-            
-            # 检查页面内容
-            echo ""
-            echo "=== 检查页面内容 ==="
-            
-            # 查找续期按钮
-            if grep -q "Renouveler" response.html; then
-              echo "✓ 找到 'Renouveler' 按钮，需要续期"
-              # 这里需要点击按钮，但 curl 无法做到
-              echo "⚠️  需要使用浏览器自动化工具来点击按钮"
-            elif grep -q "Statut" response.html; then
-              echo "✓ 显示 'Statut'，无需续期"
-            else
-              echo "⚠️  未找到预期的按钮"
-            fi
-            
-            # 显示部分页面内容用于调试
-            echo ""
-            echo "=== 页面内容片段 ==="
-            grep -o "<button[^>]*>.*Renouveler.*</button>" response.html | head -5 || echo "未找到 Renouveler 按钮"
-            
-          else
-            echo "❌ 访问失败，状态码: $status_code"
-            exit 1
-          fi
-
-      - name: Upload response for debugging
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: response-html
-          path: response.html
-          if-no-files-found: ignore
-
-      - name: Setup Python if cookie valid
-        if: success()
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies if cookie valid
-        if: success()
+      - name: Install dependencies
         run: |
           pip install selenium
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
 
-      - name: Install Chrome if cookie valid
-        if: success()
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Install ChromeDriver if cookie valid
-        if: success()
+      - name: Install ChromeDriver
         uses: nanasess/setup-chromedriver@v2
 
-      - name: Create and run renewal script
-        if: success()
+      - name: Run renewal
+        id: renew
         env:
-          SKYBOTS_COOKIES: ${{ secrets.SKYBOTS_COOKIES }}
+          COOKIES: ${{ secrets.SKYBOTS_COOKIES }}
         run: |
-          cat > renew.py << 'PYEOF'
-          import os
-          import time
+          python - << 'EOF' | tee output.log
+          import os, time
           from selenium import webdriver
           from selenium.webdriver.common.by import By
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
           from selenium.webdriver.chrome.options import Options
 
-          chrome_options = Options()
-          chrome_options.add_argument('--headless=new')
-          chrome_options.add_argument('--no-sandbox')
-          chrome_options.add_argument('--disable-dev-shm-usage')
-          chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-          chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-          chrome_options.add_experimental_option('useAutomationExtension', False)
+          options = Options()
+          options.add_argument('--headless=new')
+          options.add_argument('--no-sandbox')
+          options.add_argument('--disable-dev-shm-usage')
           
-          driver = webdriver.Chrome(options=chrome_options)
+          driver = webdriver.Chrome(options=options)
           
           try:
-              # 使用 Chrome DevTools Protocol 注入 cookies
-              cookie_string = os.environ.get('SKYBOTS_COOKIES', '')
-              
-              # 先访问页面才能设置 cookie
               driver.get('https://skybots.tech')
               time.sleep(2)
               
-              # 使用 CDP 设置 cookies（支持所有类型的 cookie）
+              # 使用 CDP 设置 cookies
               driver.execute_cdp_cmd('Network.enable', {})
+              for cookie in os.environ['COOKIES'].split('; '):
+                  name, value = cookie.split('=', 1)
+                  driver.execute_cdp_cmd('Network.setCookie', {
+                      'name': name.strip(),
+                      'value': value.strip(),
+                      'domain': '.skybots.tech',
+                      'path': '/',
+                      'secure': True,
+                      'httpOnly': True,
+                      'sameSite': 'Lax'
+                  })
               
-              for cookie in cookie_string.split('; '):
-                  if '=' in cookie:
-                      name, value = cookie.split('=', 1)
-                      name = name.strip()
-                      value = value.strip()
-                      
-                      try:
-                          # 构建 cookie 参数
-                          cookie_param = {
-                              'name': name,
-                              'value': value,
-                              'domain': '.skybots.tech',
-                              'path': '/',
-                              'secure': True,
-                              'httpOnly': True,
-                              'sameSite': 'None' if 'Secure' in name or 'Host' in name else 'Lax'
-                          }
-                          
-                          driver.execute_cdp_cmd('Network.setCookie', cookie_param)
-                          print(f'✓ 已设置: {name}')
-                      except Exception as e:
-                          print(f'✗ 设置失败 {name}: {e}')
-              
-              # 刷新页面应用 cookies
-              print('\n刷新页面...')
               driver.get('https://skybots.tech/dashboard/my-projects')
               time.sleep(5)
               
-              print(f'当前 URL: {driver.current_url}')
-              driver.save_screenshot('page.png')
-              print('已保存截图')
-              
-              # 检查是否成功登录
-              if 'discord' in driver.current_url.lower() or 'login' in driver.current_url.lower():
-                  print('❌ Cookie 已过期，需要重新登录')
+              # 检查登录状态
+              if 'discord' in driver.current_url.lower():
+                  print('❌ Cookie 已过期')
                   exit(1)
+              
+              driver.save_screenshot('page.png')
               
               # 查找并点击续期按钮
               buttons = driver.find_elements(By.XPATH, "//button[contains(., 'Renouveler')]")
-              
               if buttons:
-                  print(f'\n找到 {len(buttons)} 个续期按钮')
-                  
-                  # 方法1: 滚动到按钮位置并等待
+                  print(f'找到续期按钮')
                   driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", buttons[0])
+                  time.sleep(1)
+                  driver.execute_script("arguments[0].click();", buttons[0])
                   time.sleep(2)
                   
+                  # 处理成功提示
                   try:
-                      # 方法2: 尝试直接点击
-                      buttons[0].click()
-                  except Exception as e:
-                      print(f'直接点击失败: {e}')
-                      print('尝试使用 JavaScript 点击...')
-                      # 方法3: 使用 JavaScript 点击（绕过遮挡）
-                      driver.execute_script("arguments[0].click();", buttons[0])
+                      alert = driver.switch_to.alert
+                      print(f'✅ {alert.text}')
+                      alert.accept()
+                  except:
+                      pass
                   
-                  time.sleep(3)
-                  driver.save_screenshot('after_click.png')
-                  print('✅ 已点击续期按钮')
-                  
-                  # 获取新 cookies
-                  all_cookies = driver.get_cookies()
-                  cookie_str = '; '.join([f"{c['name']}={c['value']}" for c in all_cookies])
-                  print(f'\nNEW_COOKIES={cookie_str}')
+                  # 输出新 cookies
+                  cookies = '; '.join([f"{c['name']}={c['value']}" for c in driver.get_cookies()])
+                  print(f'NEW_COOKIES={cookies}')
               else:
                   print('✅ 无需续期')
               
-          except Exception as e:
-              print(f'❌ 错误: {e}')
-              driver.save_screenshot('error.png')
-              exit(1)
           finally:
               driver.quit()
-          PYEOF
+          EOF
+
+      - name: Update cookies
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # 提取新的 cookies
+          new_cookies=$(grep "NEW_COOKIES=" output.log | cut -d'=' -f2-)
           
-          python renew.py
+          if [ -n "$new_cookies" ]; then
+            echo "正在更新 Secrets..."
+            gh secret set SKYBOTS_COOKIES --body "$new_cookies"
+            echo "✅ Cookies 已更新"
+          else
+            echo "ℹ️ 无需更新 Cookies"
+          fi
 
       - name: Upload screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: screenshot
-          path: |
-            page.png
-            after_click.png
-            error.png
+          path: page.png
           if-no-files-found: ignore
-
-      - name: Extract and update cookies
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          if [ -f renew.log ]; then
-            new_cookies=$(grep "NEW_COOKIES=" renew.log | cut -d'=' -f2-)
-            if [ -n "$new_cookies" ]; then
-              echo "正在更新 Secrets..."
-              gh secret set SKYBOTS_COOKIES --body "$new_cookies"
-              echo "✅ Cookies 已更新"
-            fi
-          fi
