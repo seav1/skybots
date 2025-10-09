@@ -58,19 +58,24 @@ jobs:
                   cookie_param = {
                       'name': name,
                       'value': value,
-                      'domain': '.skybots.tech',
                       'path': '/'
                   }
                   
-                  # 根据 cookie 名称添加额外属性
-                  if '__Secure-' in name or '__Host-' in name:
+                  # __Host- 前缀的 cookie 不能设置 domain
+                  if '__Host-' in name:
                       cookie_param['secure'] = True
                       cookie_param['sameSite'] = 'None'
+                      cookie_param['url'] = 'https://skybots.tech'
+                  else:
+                      cookie_param['domain'] = '.skybots.tech'
+                      if '__Secure-' in name:
+                          cookie_param['secure'] = True
+                          cookie_param['sameSite'] = 'None'
                   
                   try:
                       driver.execute_cdp_cmd('Network.setCookie', cookie_param)
                   except Exception as e:
-                      print(f'⚠️ 跳过 {name}: {e}')
+                      print(f'⚠️ 跳过 {name}: {str(e)[:50]}')
               
               driver.get('https://skybots.tech/dashboard/my-projects')
               time.sleep(5)
