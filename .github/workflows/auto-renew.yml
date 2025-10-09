@@ -36,12 +36,18 @@ jobs:
             // 解析并设置 cookies
             const cookieString = process.env.SKYBOTS_COOKIES;
             const cookies = cookieString.split('; ').map(cookie => {
-              const [name, value] = cookie.split('=');
+              const equalIndex = cookie.indexOf('=');
+              const name = cookie.substring(0, equalIndex).trim();
+              const value = cookie.substring(equalIndex + 1);
+              
               return {
-                name: name.trim(),
-                value: decodeURIComponent(value),
-                domain: 'skybots.tech',
-                path: '/'
+                name: name,
+                value: value,
+                domain: '.skybots.tech',
+                path: '/',
+                httpOnly: name.includes('auth') || name.includes('session'),
+                secure: name.includes('Secure') || name.includes('Host'),
+                sameSite: 'Lax'
               };
             });
             
@@ -74,7 +80,8 @@ jobs:
               // 获取更新后的 cookies
               const newCookies = await context.cookies();
               const cookieStr = newCookies
-                .map(c => `${c.name}=${encodeURIComponent(c.value)}`)
+                .filter(c => c.domain.includes('skybots.tech'))
+                .map(c => `${c.name}=${c.value}`)
                 .join('; ');
               
               console.log('NEW_COOKIES=' + cookieStr);
