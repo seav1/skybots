@@ -175,10 +175,20 @@ jobs:
               
               if buttons:
                   print(f'\n找到 {len(buttons)} 个续期按钮')
-                  # 滚动到按钮位置
-                  driver.execute_script("arguments[0].scrollIntoView(true);", buttons[0])
-                  time.sleep(1)
-                  buttons[0].click()
+                  
+                  # 方法1: 滚动到按钮位置并等待
+                  driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", buttons[0])
+                  time.sleep(2)
+                  
+                  try:
+                      # 方法2: 尝试直接点击
+                      buttons[0].click()
+                  except Exception as e:
+                      print(f'直接点击失败: {e}')
+                      print('尝试使用 JavaScript 点击...')
+                      # 方法3: 使用 JavaScript 点击（绕过遮挡）
+                      driver.execute_script("arguments[0].click();", buttons[0])
+                  
                   time.sleep(3)
                   driver.save_screenshot('after_click.png')
                   print('✅ 已点击续期按钮')
